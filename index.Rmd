@@ -1,0 +1,153 @@
+---
+title: "Practical ML Project"
+author: "Crystal Lwi"
+date: "01/01/2022"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(caret, dplyr, tidyr, janitor, purrr, gbm, corrplot)
+```
+
+## Data Loading and Understanding
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+This is basically the variables that are measured. Credit: [!link] https://miro.medium.com/max/608/1*LHTEzB0pqUIOJZt9l-YtmA.png
+
+
+```{r }
+data_dir <- './data/' 
+set.seed(123)
+
+# set the URL for the download
+UrlTrain <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+UrlTest  <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+# download the datasets
+training <- read.csv(url(UrlTrain))
+testing  <- read.csv(url(UrlTest))
+
+# create a partition with the training dataset 
+inTrain  <- createDataPartition(training$classe, p=0.7, list=FALSE)
+TrainSet <- training[inTrain, ]
+TestSet  <- training[-inTrain, ]
+
+TrainSet <- TrainSet %>% clean_names()
+TestSet <- TestSet %>% clean_names()
+dim(TrainSet)
+```
+
+Based on the summary, there are 6 distinct users.
+Each row represent one of the user's measurements that are based on timestamp. We can now remove these timestamp columns as they will not be used to predict the classe. 
+
+Now, because this is a high-dimension dataset with >155 columns, let's try to remove variables that have zero covariance. We will also remove timestamp columns, identity columns. 
+
+
+## Removing zero variances
+```{r Remove multicollinearity}
+TrainSet <- TrainSet %>% dplyr::select(-c(contains('timestamp')), -x)
+TestSet <- TestSet %>% dplyr::select(-c(contains('timestamp')), -x)
+# remove variables with Nearly Zero Variance
+NZV <- nearZeroVar(TrainSet)
+TrainSet <- TrainSet[, -NZV]
+TestSet  <- TestSet[, -NZV]
+dim(TrainSet)
+
+
+```
+
+We will next remove any columns that have very high NA. These columns do not help to predict the classes.
+
+```{r Remove NA}
+# remove variables that are mostly NA
+AllNA    <- sapply(TrainSet, function(x) mean(is.na(x))) > 0.95
+TrainSet <- TrainSet[, AllNA==FALSE]
+TestSet  <- TestSet[, AllNA==FALSE]
+dim(TrainSet)
+dim(TestSet)
+```
+
+```{r}
+# remove identification only variables (columns 1 )
+TrainSet <- TrainSet[, -(1)]
+TestSet  <- TestSet[, -(1)]
+dim(TrainSet)
+
+```
+
+## Correlation Analysis
+```{r corrplot}
+corMatrix <- cor(TrainSet[, -54])
+corrplot(corMatrix, order = "FPC", method = "color", type = "lower", 
+         tl.cex = 0.8, tl.col = rgb(0, 0, 0))
+
+```
+From the correlation heatmap, we can observe that there are some very highly correlated variables. In order to avoid the problems of multicollinearity, we will add a Preprocess step to do Principal component analysis (PCA) to help reduce the dimensions of the data. 
+
+Now that we have  clean dataframe, I am going to try modelling using Caret packages to predict classe and look at the results. Here we will test a few popular models including: Decision Trees, Random Forest, Gradient Boosted Trees, and SVM. 
+
+Set up control for training to use 3-fold cross validation.
+
+## Random Forest: Model 1
+```{r Model 1: Random Forest}
+#RF model
+set.seed(333)
+controlRF <- trainControl(method="cv", number=3, verboseIter=FALSE)
+model1 <- train(classe ~ ., data=TrainSet, method="rf",
+                          trControl=controlRF)
+
+saveRDS(model1, 'RfModel1.rds')
+```
+
+```{r RF Predictions}
+rf_pred <- predict(model1, TestSet)
+cm_rf <- confusionMatrix(rf_pred, factor(TestSet$classe))
+cm_rf
+```
+
+
+## GBM : Model 2
+```{r Model 2: GBM}
+set.seed(111)
+controlGBM <- trainControl(method = "repeatedcv", number = 5, repeats = 1)
+modFitGBM  <- train(classe ~ ., data=TrainSet, method = "gbm",
+                    trControl = controlGBM, verbose = FALSE)
+modFitGBM$finalModel
+saveRDS(modFitGBM, 'gbm_Model2.RDS')
+```
+
+```{r GBM Predictions}
+# prediction on Test dataset
+predictGBM <- predict(modFitGBM, newdata=TestSet)
+cmgbm <- confusionMatrix(predictGBM, factor(TestSet$classe))
+cmgbm
+```
+
+## Support Vector Machine
+```{r SVM}
+control <- trainControl(method="cv", number=3, verboseIter=F)
+model3 <- train(classe ~ ., data=TrainSet, method="svmLinear", trControl = control, tuneLength = 5, verbose = F)
+saveRDS(model3, 'model3_svm.RDS')
+```
+
+```{r SVM prediction}
+pred_svm <- predict(model3, TestSet)
+cm_svm <- confusionMatrix(pred_svm, factor(TestSet$classe))
+cm_svm
+```
+Based on the results of the accuracy: 
+Random Forest = 0.998
+GBM = 0.986
+SVM = 0.791
+
+Since Random forest model is the best, we'll use the Random Forest model to predict the TestSet.
+```{r predict}
+pred <- predict(model1, testing)
+print(pred)
+```
+
